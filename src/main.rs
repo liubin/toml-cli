@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::str;
 
 use failure::{Error, Fail};
-use serde::ser::{Serialize, SerializeMap, Serializer, SerializeSeq};
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use structopt::StructOpt;
-use toml_edit::{Document, Item, Table, Value, value};
+use toml_edit::{value, Document, Item, Table, Value};
 
-use query_parser::{Query, TpathSegment, parse_query};
+use query_parser::{parse_query, Query, TpathSegment};
 
 // TODO: Get more of the description in the README into the CLI help.
 #[derive(StructOpt)]
@@ -59,7 +59,11 @@ fn main() -> Result<(), Error> {
     let args = Args::from_args();
     match args {
         Args::Get { path, query, opts } => get(path, &query, opts)?,
-        Args::Set { path, query, value_str } => set(path, &query, &value_str)?,
+        Args::Set {
+            path,
+            query,
+            value_str,
+        } => set(path, &query, &value_str)?,
     }
     Ok(())
 }
@@ -78,7 +82,7 @@ fn get(path: PathBuf, query: &str, opts: GetOpts) -> Result<(), Error> {
     if opts.output_toml {
         print_toml_fragment(&doc, &tpath);
     } else {
-        let item = walk_tpath(&doc.root, &tpath);
+        let item = walk_tpath(doc.as_item(), &tpath);
         // TODO: support shell-friendly output like `jq -r`
         println!("{}", serde_json::to_string(&JsonItem(item))?);
     }
@@ -88,7 +92,7 @@ fn get(path: PathBuf, query: &str, opts: GetOpts) -> Result<(), Error> {
 fn print_toml_fragment(doc: &Document, tpath: &[TpathSegment]) -> () {
     use TpathSegment::{Name, Num};
 
-    let mut item = &doc.root;
+    let mut item = doc.as_item();
     let mut breadcrumbs = vec![];
     for seg in tpath {
         breadcrumbs.push((item, seg));
@@ -117,7 +121,9 @@ fn print_toml_fragment(doc: &Document, tpath: &[TpathSegment]) -> () {
                 let mut next = a.clone();
                 next.clear();
                 match item {
-                    Item::Table(t) => { next.append(t); },
+                    Item::Table(t) => {
+                        next.push(t);
+                    }
                     _ => panic!("malformed TOML parse-tree"),
                 }
                 item = Item::ArrayOfTables(next);
@@ -125,8 +131,9 @@ fn print_toml_fragment(doc: &Document, tpath: &[TpathSegment]) -> () {
             _ => panic!("UNIMPLEMENTED: --output-toml inside inline data"), // TODO
         }
     }
-    let mut doc = Document::new();
-    doc.root = item;
+
+    let root = item.into_table().unwrap();
+    let doc: Document = root.into();
     print!("{}", doc.to_string());
 }
 
@@ -134,7 +141,7 @@ fn set(path: PathBuf, query: &str, value_str: &str) -> Result<(), Error> {
     let tpath = parse_query_cli(query)?.0;
     let mut doc = read_parse(path)?;
 
-    let mut item = &mut doc.root;
+    let mut item = doc.as_item_mut();
     let mut already_inline = false;
     let mut tpath = &tpath[..];
     use TpathSegment::{Name, Num};
@@ -150,7 +157,10 @@ fn set(path: PathBuf, query: &str, value_str: &str) -> Result<(), Error> {
                 if n >= &len {
                     Err(CliError::ArrayIndexOob())?;
                 }
-                match &item { Item::Value(_) => already_inline = true, _ => () };
+                match &item {
+                    Item::Value(_) => already_inline = true,
+                    _ => (),
+                };
                 item = &mut item[n];
             }
             Name(n) => {
@@ -158,11 +168,13 @@ fn set(path: PathBuf, query: &str, value_str: &str) -> Result<(), Error> {
                     Item::Table(_) => (),
                     Item::Value(Value::InlineTable(_)) => already_inline = true,
                     // TODO make this more directly construct the new, inner part?
-                    _ => *item = if already_inline {
-                        Item::Value(Value::InlineTable(Default::default()))
-                    } else {
-                        Item::Table(Table::new())
-                    },
+                    _ => {
+                        *item = if already_inline {
+                            Item::Value(Value::InlineTable(Default::default()))
+                        } else {
+                            Item::Table(Table::new())
+                        }
+                    }
                 };
                 item = &mut item[n];
             }
@@ -181,8 +193,7 @@ fn parse_query_cli(query: &str) -> Result<Query, CliError> {
     })
 }
 
-fn walk_tpath<'a>(mut item: &'a toml_edit::Item, tpath: &[TpathSegment])
-              -> &'a toml_edit::Item {
+fn walk_tpath<'a>(mut item: &'a toml_edit::Item, tpath: &[TpathSegment]) -> &'a toml_edit::Item {
     use TpathSegment::{Name, Num};
     for seg in tpath {
         match seg {
@@ -198,7 +209,8 @@ struct JsonItem<'a>(&'a toml_edit::Item);
 
 impl Serialize for JsonItem<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer,
+    where
+        S: Serializer,
     {
         match self.0 {
             Item::Value(v) => JsonValue(v).serialize(serializer),
@@ -219,7 +231,8 @@ struct JsonTable<'a>(&'a toml_edit::Table);
 
 impl Serialize for JsonTable<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer,
+    where
+        S: Serializer,
     {
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for (k, v) in self.0.iter() {
@@ -233,7 +246,8 @@ struct JsonValue<'a>(&'a toml_edit::Value);
 
 impl Serialize for JsonValue<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer,
+    where
+        S: Serializer,
     {
         if let Some(v) = self.0.as_integer() {
             v.serialize(serializer)
@@ -243,7 +257,7 @@ impl Serialize for JsonValue<'_> {
             v.serialize(serializer)
         } else if let Some(v) = self.0.as_str() {
             v.serialize(serializer)
-        } else if let Some(_) = self.0.as_date_time() {
+        } else if let Some(_) = self.0.as_datetime() {
             "UNIMPLEMENTED: DateTime".serialize(serializer) // TODO
         } else if let Some(arr) = self.0.as_array() {
             let mut seq = serializer.serialize_seq(Some(arr.len()))?;
