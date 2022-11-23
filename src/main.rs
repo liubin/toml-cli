@@ -109,7 +109,7 @@ fn check_exists(path: PathBuf, query: &str) -> Result<bool, Error> {
 /// Check whether a key exists.
 /// It will print 'true' to stdout in case exists, and set exit code to '0'
 /// otherwise it will print 'false' to stderr and set exit code to '1'
-fn check(path: PathBuf, query: &str) -> () {
+fn check(path: PathBuf, query: &str) {
     if let Ok(r) = check_exists(path, query) {
         if r {
             println!("true");
@@ -134,7 +134,7 @@ fn get(path: PathBuf, query: &str, opts: GetOpts) -> Result<(), Error> {
     Ok(())
 }
 
-fn print_toml_fragment(doc: &Document, tpath: &[TpathSegment]) -> () {
+fn print_toml_fragment(doc: &Document, tpath: &[TpathSegment]) {
     let mut item = doc.as_item();
     let mut breadcrumbs = vec![];
     for seg in tpath {
@@ -177,7 +177,7 @@ fn print_toml_fragment(doc: &Document, tpath: &[TpathSegment]) -> () {
 
     let root = item.into_table().unwrap();
     let doc: Document = root.into();
-    print!("{}", doc.to_string());
+    print!("{}", doc);
 }
 
 fn set(path: PathBuf, query: &str, value_str: &str) -> Result<(), Error> {
@@ -199,10 +199,11 @@ fn set(path: PathBuf, query: &str, value_str: &str) -> Result<(), Error> {
                 if n >= &len {
                     Err(CliError::ArrayIndexOob())?;
                 }
-                match &item {
-                    Item::Value(_) => already_inline = true,
-                    _ => (),
-                };
+
+                if let Item::Value(_) = &item {
+                    already_inline = true;
+                }
+
                 item = &mut item[n];
             }
             Name(n) => {
@@ -225,7 +226,7 @@ fn set(path: PathBuf, query: &str, value_str: &str) -> Result<(), Error> {
     *item = value(value_str);
 
     // TODO actually write back
-    print!("{}", doc.to_string());
+    print!("{}", doc);
     Ok(())
 }
 
@@ -298,7 +299,7 @@ impl Serialize for JsonValue<'_> {
             v.serialize(serializer)
         } else if let Some(v) = self.0.as_str() {
             v.serialize(serializer)
-        } else if let Some(_) = self.0.as_datetime() {
+        } else if self.0.as_datetime().is_some() {
             "UNIMPLEMENTED: DateTime".serialize(serializer) // TODO
         } else if let Some(arr) = self.0.as_array() {
             let mut seq = serializer.serialize_seq(Some(arr.len()))?;
